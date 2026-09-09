@@ -12,7 +12,7 @@
     <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%230b0f14'/%3E%3Crect%20x='1.5'%20y='1.5'%20width='61'%20height='61'%20rx='12.5'%20fill='none'%20stroke='%23d4a05a'%20stroke-opacity='0.4'%20stroke-width='3'/%3E%3Ccircle%20cx='32'%20cy='18.5'%20r='8'%20fill='%23d4a05a'/%3E%3Cpath%20d='M32%2027c-5.2%200-8.6%203.7-8.6%208.2%200%202.6%201.2%204.9%203.2%206.5C21.9%2043.6%2018.6%2048.2%2017.6%2053h28.8c-1-4.8-4.3-9.4-9-11.3%202-1.6%203.2-3.9%203.2-6.5C40.6%2030.7%2037.2%2027%2032%2027z'%20fill='%23d4a05a'/%3E%3Crect%20x='14.5'%20y='53'%20width='35'%20height='5.5'%20rx='2.75'%20fill='%23d4a05a'/%3E%3C/svg%3E">
     <script type="text/javascript"
-        src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=RcQboZUzU6MhZP1M4wflXSs8KB2x-nQTyd9Xp621kPjwnQFaCa5IzIy1MflmAC19OblpbYlYYVH4dt5an9-L0Vc7qsOEfJvSK2tLMmwfpzdFrqc5mTXrkolENgCobglhmA7dZ0jGFLS0OPH8DOxE9AbbaYW90I4pD8lY0gmEXclPkAVAdV026NYf5S8Z5qnD11dVhQ_dNkyDQtyy-B7RjnQ5OimfrfjwryX5fLk3Af4T2ARpClTfiXEm1XWYSwAYm3Su6Wt68ql25XlJsSMhdTafRLBFsoVmx9OBsaq96qbeqKfeAkIAyMmiVjXMyFPPxazQGQ5oXVQmigd9Pm0U8Q"
+        src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=C7gT1fqVaFKWs546oGWutlm39CKLOrFICH7SY_vp8p8svFJ1gC_vRadQXq9HK7qNvNz6CAMLABFjrnYOcqdXlUZvBG48MTeKCqyoSr3QL8YngU1uo6Ok5PTJayn2cdEP8gJPr1u1MyXhZvJ1I2fYv_Gll93KC-rzYGMi3H2VtWM9NrTfkzlvWZtyZbm98ljqNWwRTDZHIXX34LP1V93QF9aqqqzQCLbFOYRQGSjYH5s4gsr5GR9V9EGt7T7ExzLtInuSaMvxxpP1W_-HphGxxxHW7PMS82sldSGRLrvJ6gI4vZRxcaAZdFtY-z98ENUNeNOcSXqxvxlb8ILhetqSjQ"
         charset="UTF-8"></script>
     <style>
         /* ============================================================
@@ -3237,11 +3237,24 @@
                 }
                 if (!cands.length) return null;
                 if (difficulty === 'hard') {
-                    let top = cands[0];
-                    for (const c of cands) if (c.w > top.w) top = c;
-                    // Hard mode is deterministic: never inject randomness into the
-                    // opening book when a highest-weight continuation is available.
-                    return top.move;
+                    // Keep Hard strategically strong, but do not expose a fixed
+                    // memorisable opening script. Randomise only inside the
+                    // strongest book band; weaker lines are never selected here.
+                    let topW = 0;
+                    for (const c of cands) topW = Math.max(topW, c.w);
+                    const band = cands.filter(c => c.w >= topW * 0.55);
+                    if (band.length === 1) return band[0].move;
+
+                    // Weight by book confidence, so opening plans vary while
+                    // remaining concentrated on the most credible continuations.
+                    let total = 0;
+                    for (const c of band) total += Math.max(1, c.w * c.w);
+                    let roll = Math.random() * total;
+                    for (const c of band) {
+                        roll -= Math.max(1, c.w * c.w);
+                        if (roll <= 0) return c.move;
+                    }
+                    return band[0].move;
                 }
                 let total = 0;
                 for (const c of cands) total += c.w;
