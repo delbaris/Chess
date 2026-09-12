@@ -11,9 +11,6 @@
     <title>Grand Chess · Premium</title>
     <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%230b0f14'/%3E%3Crect%20x='1.5'%20y='1.5'%20width='61'%20height='61'%20rx='12.5'%20fill='none'%20stroke='%23d4a05a'%20stroke-opacity='0.4'%20stroke-width='3'/%3E%3Ccircle%20cx='32'%20cy='18.5'%20r='8'%20fill='%23d4a05a'/%3E%3Cpath%20d='M32%2027c-5.2%200-8.6%203.7-8.6%208.2%200%202.6%201.2%204.9%203.2%206.5C21.9%2043.6%2018.6%2048.2%2017.6%2053h28.8c-1-4.8-4.3-9.4-9-11.3%202-1.6%203.2-3.9%203.2-6.5C40.6%2030.7%2037.2%2027%2032%2027z'%20fill='%23d4a05a'/%3E%3Crect%20x='14.5'%20y='53'%20width='35'%20height='5.5'%20rx='2.75'%20fill='%23d4a05a'/%3E%3C/svg%3E">
-    <script type="text/javascript"
-        src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=C7gT1fqVaFKWs546oGWutlm39CKLOrFICH7SY_vp8p8svFJ1gC_vRadQXq9HK7qNvNz6CAMLABFjrnYOcqdXlUZvBG48MTeKCqyoSr3QL8YngU1uo6Ok5PTJayn2cdEP8gJPr1u1MyXhZvJ1I2fYv_Gll93KC-rzYGMi3H2VtWM9NrTfkzlvWZtyZbm98ljqNWwRTDZHIXX34LP1V93QF9aqqqzQCLbFOYRQGSjYH5s4gsr5GR9V9EGt7T7ExzLtInuSaMvxxpP1W_-HphGxxxHW7PMS82sldSGRLrvJ6gI4vZRxcaAZdFtY-z98ENUNeNOcSXqxvxlb8ILhetqSjQ"
-        charset="UTF-8"></script>
     <style>
         /* ============================================================
    DESIGN TOKENS & THEMES
@@ -3227,7 +3224,8 @@
                 if (!BOOK) BOOK = buildBook();
                 const arr = BOOK.get(engine.positionKey());
                 if (!arr || !arr.length) return null;
-                const prob = difficulty === 'easy' ? 0.5 : (difficulty === 'medium' ? 0.8 : 0.95);
+                const isInitialPosition = engine.history.length === 0 && engine.fullmove === 1 && engine.turn === 'w';
+                const prob = difficulty === 'easy' ? 0.5 : (difficulty === 'medium' ? 0.8 : (isInitialPosition ? 0.99 : 0.72));
                 if (Math.random() > prob) return null;
                 const legal = engine.generateLegalMoves();
                 const cands = [];
@@ -3237,21 +3235,31 @@
                 }
                 if (!cands.length) return null;
                 if (difficulty === 'hard') {
-                    // Keep Hard strategically strong, but do not expose a fixed
-                    // memorisable opening script. Randomise only inside the
-                    // strongest book band; weaker lines are never selected here.
+                    // Hard remains strength-first, but the exact starting move
+                    // must not become a memorisable script. Diversify only at
+                    // the true initial position, where several principled
+                    // first moves exist in the opening book.
+                    const isInitial = isInitialPosition;
                     let topW = 0;
                     for (const c of cands) topW = Math.max(topW, c.w);
-                    const band = cands.filter(c => c.w >= topW * 0.55);
+
+                    // At the initial position accept every book move that has
+                    // at least 17% of the best confidence. This admits e4, d4,
+                    // c4 and Nf3 in the current book, while excluding noise.
+                    // Elsewhere use a tighter 55% band to preserve strength.
+                    const threshold = topW * (isInitial ? 0.075 : 0.55);
+                    const band = cands.filter(c => c.w >= threshold);
                     if (band.length === 1) return band[0].move;
 
-                    // Weight by book confidence, so opening plans vary while
-                    // remaining concentrated on the most credible continuations.
+                    // Confidence-weighted selection: the strongest moves stay
+                    // clearly more likely, but credible alternatives remain
+                    // reachable so repeated games do not reveal a fixed line.
+                    const power = isInitial ? 0.55 : 2.0;
                     let total = 0;
-                    for (const c of band) total += Math.max(1, c.w * c.w);
+                    for (const c of band) total += Math.max(1, Math.pow(c.w, power));
                     let roll = Math.random() * total;
                     for (const c of band) {
-                        roll -= Math.max(1, c.w * c.w);
+                        roll -= Math.max(1, Math.pow(c.w, power));
                         if (roll <= 0) return c.move;
                     }
                     return band[0].move;
@@ -3683,6 +3691,7 @@
                                 if (Math.abs(eng.board[m.from]) === 6 && m.flags.castle) score += 400000;
                             }
                         }
+                        if (eng.__bookHint && this._sameMove(m, eng.__bookHint)) score += 380000;
                         m._score = score;
                     }
                     moves.sort((a, b) => b._score - a._score);
@@ -3872,8 +3881,9 @@
 
                         // Null move pruning only when there is enough material and depth.
                         // We deliberately avoid it in low-material/endgame positions.
-                        if (allowNull && !inCheck && depth >= 5 &&
-                            this._nonPawnMaterial(eng, eng.turn) >= 700) {
+                        if (allowNull && !inCheck && depth >= 6 &&
+                            staticEval >= beta - 60 &&
+                            this._nonPawnMaterial(eng, eng.turn) >= 900) {
                             const nu = eng.makeNullMove();
                             const reduction = depth >= 9 ? 3 : 2;
                             const nullScore = -negamax(
@@ -3882,9 +3892,10 @@
                             eng.undoNullMove(nu);
                             if (stopFlag) return 0;
                             if (nullScore >= beta) {
-                                // Verification search prevents many zugzwang false positives.
-                                if (depth <= 7) return nullScore;
-                                const verify = negamax(eng, depth - 1 - reduction, beta - 1, beta, ply, false);
+                                // Always verify a null-move fail-high. It costs nodes,
+                                // but avoids tactical false cutoffs and zugzwang errors.
+                                const verifyDepth = Math.max(1, depth - 1 - reduction);
+                                const verify = negamax(eng, verifyDepth, beta - 1, beta, ply, false);
                                 if (!stopFlag && verify >= beta) return verify;
                             }
                         }
@@ -4108,6 +4119,61 @@
                     };
                 },
 
+                _protectObviousBlunder(engine, res, chosen, difficulty) {
+                    if (!chosen || !res || !Array.isArray(res.rootMoves) || res.rootMoves.length < 2) return chosen;
+
+                    const top = res.rootMoves.slice().filter(x => x && x.m).sort((a, b) => b.s - a.s);
+                    const chosenItem = top.find(x => this._sameMove(x.m, chosen));
+                    if (!chosenItem) return chosen;
+
+                    const margin = difficulty === 'hard' ? 24 : (difficulty === 'medium' ? 55 : 140);
+
+                    const hangsMajorPiece = (move) => {
+                        let undo = null;
+                        try {
+                            const before = this.evaluate(engine);
+                            undo = engine.makeMove(move);
+                            const mover = engine.turn === 'w' ? 'b' : 'w';
+                            if (engine.isInCheck(mover)) return false;
+
+                            if ((move.captured || move.flags.enPassant) && seeMove(engine, move) < -280) {
+                                return true;
+                            }
+
+                            const replies = engine.generateCaptures(engine.turn);
+                            let majorHang = false;
+                            for (const reply of replies) {
+                                const victim = reply.flags.enPassant ? 1 : (reply.captured || 0);
+                                if (victim !== 4 && victim !== 5) continue;
+                                const target = engine.board[reply.to];
+                                if (Math.abs(target) !== victim) continue;
+                                if (seeMove(engine, reply) >= -40) {
+                                    majorHang = true;
+                                    break;
+                                }
+                            }
+
+                            const after = this.evaluate(engine);
+                            return majorHang && (after - before < -180);
+                        } catch (_) {
+                            return false;
+                        } finally {
+                            if (undo) {
+                                try { engine.undoMove(undo); } catch (_) { }
+                            }
+                        }
+                    };
+
+                    if (!hangsMajorPiece(chosen)) return chosen;
+
+                    for (const item of top) {
+                        if (this._sameMove(item.m, chosen)) continue;
+                        if (chosenItem.s - item.s > margin) break;
+                        if (!hangsMajorPiece(item.m)) return item.m;
+                    }
+                    return chosen;
+                },
+
                 _repAdjust(engine, x) {
                     try {
                         const u = engine.makeMove(x.m);
@@ -4142,7 +4208,34 @@
                         s: x.s + this._repAdjust(engine, x)
                     })).sort((a, b) => b.s - a.s);
 
-                    if (difficulty === 'hard') return adjusted[0].m;
+                    if (difficulty === 'hard') {
+                        // Hard must remain strength-first, but when several root
+                        // moves are genuinely near-equal, always taking the same
+                        // PV exposes a repeatable fingerprint. Randomise only
+                        // inside a very narrow centipawn band; tactical/mate
+                        // decisions remain deterministic.
+                        const hardWindow = engine.fullmove <= 14 ? 16 : 10;
+                        const top = adjusted[0].s;
+                        const pool = adjusted.filter(x => x.s >= top - hardWindow);
+                        if (pool.length <= 1) return adjusted[0].m;
+
+                        // Stronger alternatives receive more weight. A move near
+                        // the PV is therefore much more likely than a borderline
+                        // alternative, keeping practical playing strength intact.
+                        let total = 0;
+                        const weights = pool.map((x, i) => {
+                            const delta = Math.max(0, top - x.s);
+                            const w = Math.exp(-delta / 6) * (1 + Math.max(0, 2 - i) * 0.15);
+                            total += w;
+                            return w;
+                        });
+                        let roll = Math.random() * total;
+                        for (let i = 0; i < pool.length; i++) {
+                            roll -= weights[i];
+                            if (roll <= 0) return pool[i].m;
+                        }
+                        return pool[0].m;
+                    }
 
                     // Easy is deliberately imperfect, but never intentionally suicidal.
                     // Medium is much tighter around the principal variation.
@@ -4175,40 +4268,45 @@
                     }
                     return pool[0].m;
                 },
-
                 getMoveDetailed(engine, difficulty, budgets) {
                     const B = budgets || {};
                     const legal = engine.generateLegalMoves();
                     if (!legal.length) return null;
-                    if (legal.length === 1) return { move: legal[0], score: 0 };
+                    if (legal.length === 1) return { move: legal[0], score: 0, depth: 0, nodes: 0 };
 
-                    // Keep the opening book, but Hard always chooses the most reliable
-                    // book continuation rather than introducing unnecessary randomness.
-                    if (engine.fullmove <= 18) {
-                        const bm = bookProbe(engine, difficulty);
-                        if (bm) return { move: bm, score: 0, depth: 0, nodes: 0 };
-                    }
+                    // Opening knowledge is only a move-ordering hint. Every opening
+                    // decision is still verified by the full search.
+                    const bookHint = engine.fullmove <= 18 ? bookProbe(engine, difficulty) : null;
+                    if (bookHint) engine.__bookHint = bookHint;
+                    else delete engine.__bookHint;
 
                     let depth, budget;
                     if (difficulty === 'easy') {
-                        depth = 5;
-                        budget = B.easy || 700;
+                        depth = 7;
+                        budget = B.easy || 1100;
                     } else if (difficulty === 'medium') {
-                        depth = 9;
-                        budget = B.medium || 1800;
+                        depth = 11;
+                        budget = B.medium || 2800;
                     } else {
-                        depth = 22;
-                        budget = B.hard || 4500;
+                        depth = 28;
+                        budget = B.hard || 8500;
                     }
 
-                    const res = this.search(engine, depth, budget);
+                    let res;
+                    try {
+                        res = this.search(engine, depth, budget);
+                    } finally {
+                        delete engine.__bookHint;
+                    }
+
                     if (!res || !res.move) {
                         return { move: legal[0], score: 0, depth: 0, nodes: 0 };
                     }
 
                     const chosen = this._selectMove(engine, res, difficulty) || res.move;
+                    const safeChosen = this._protectObviousBlunder(engine, res, chosen, difficulty);
                     return {
-                        move: chosen,
+                        move: safeChosen,
                         score: res.score,
                         depth: res.depth || 0,
                         nodes: res.nodes || 0
@@ -4342,77 +4440,300 @@
         const squareToRC = Core.squareToRC;
         const rcToSquare = Core.rcToSquare;
         const squareName = Core.squareName;
+        const nameToSquare = Core.nameToSquare;
         /* ============================================================
            AI WORKER — heavy search runs off the main thread (no freeze).
            ============================================================ */
-        function workerMain() {
-            self.onmessage = function (e) {
-                var d = e.data;
-                try {
-                    var eng = new ChessEngine();
-                    eng.reset(d.fen);
-                    var out = null;
-                    if (d.type === 'move') out = AI.getMoveDetailed(eng, d.difficulty, d.budgets);
-                    else out = AI.analyze(eng, d.difficulty, d.budgets);
-                    var mv = null;
-                    if (out && out.move) {
-                        mv = { from: out.move.from, to: out.move.to, promotion: out.move.promotion || 0, flags: {} };
-                        if (out.move.flags) {
-                            if (out.move.flags.castle) mv.flags.castle = out.move.flags.castle;
-                            if (out.move.flags.enPassant) mv.flags.enPassant = true;
-                            if (out.move.flags.doublePawn) mv.flags.doublePawn = true;
-                        }
-                    }
-                    self.postMessage({ id: d.id, ok: true, move: mv, score: out ? (out.score || 0) : 0 });
-                } catch (err) {
-                    self.postMessage({ id: d.id, ok: false, error: String(err) });
-                }
-            };
+        /* ============================================================
+           STOCKFISH UCI WORKER — real chess strength
+           ------------------------------------------------------------
+           The legacy in-JS search remains available only as a local
+           emergency fallback. All normal AI play and analysis go through
+           the real Stockfish WASM UCI engine.
+
+           Required sibling assets:
+             ./stockfish-18-lite-single.js
+             ./stockfish-18-lite-single.wasm
+
+           Keep these files next to this HTML file. Because the WASM loader
+           uses fetch(), serve the folder through a local/static HTTP server
+           (the included start-chess.bat does this automatically).
+           ============================================================ */
+        const STOCKFISH_ENGINE_PATH = './stockfish-18-lite-single.js';
+        const STOCKFISH_ENGINE_VERSION = 'Stockfish 18 Lite Single';
+
+        function uciToMove(uci, fen) {
+            if (!uci || uci === '(none)' || uci === '0000') return null;
+            const s = String(uci).trim().toLowerCase();
+            if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(s)) return null;
+            try {
+                const eng = new ChessEngine();
+                eng.reset(fen);
+                const from = nameToSquare(s.slice(0, 2));
+                const to = nameToSquare(s.slice(2, 4));
+                const promotion = s.length >= 5 ? ({ q: 5, r: 4, b: 3, n: 2 }[s[4]] || 0) : 0;
+                const legal = eng.generateLegalMoves();
+                return legal.find(m =>
+                    m.from === from &&
+                    m.to === to &&
+                    (promotion ? m.promotion === promotion : !m.promotion)
+                ) || legal.find(m => m.from === from && m.to === to) || null;
+            } catch (_) {
+                return null;
+            }
         }
+
+        function parseStockfishInfo(line) {
+            const out = {};
+            const depth = line.match(/\bdepth\s+(\d+)/);
+            const seldepth = line.match(/\bseldepth\s+(\d+)/);
+            const cp = line.match(/\bscore\s+cp\s+(-?\d+)/);
+            const mate = line.match(/\bscore\s+mate\s+(-?\d+)/);
+            const nodes = line.match(/\bnodes\s+(\d+)/);
+            const nps = line.match(/\bnps\s+(\d+)/);
+            if (depth) out.depth = Number(depth[1]);
+            if (seldepth) out.seldepth = Number(seldepth[1]);
+            if (cp) out.score = Number(cp[1]);
+            if (mate) out.score = (Number(mate[1]) > 0 ? 100000 : -100000) + (Number(mate[1]) > 0 ? -Number(mate[1]) : Number(mate[1]));
+            if (nodes) out.nodes = Number(nodes[1]);
+            if (nps) out.nps = Number(nps[1]);
+            const pv = line.match(/\bpv\s+(.+)$/);
+            if (pv) out.pv = pv[1].trim().split(/\s+/);
+            return out;
+        }
+
         const AIWorker = {
             worker: null,
             seq: 0,
-            callbacks: {},
+            ready: false,
+            initializing: false,
+            failed: false,
+            current: null,
+            queued: null,
+            objectUrl: null,
+            shownAssetWarning: false,
+
             init() {
+                if (this.worker || this.initializing || this.failed) return;
+                if (typeof Worker === 'undefined') {
+                    this.failed = true;
+                    return;
+                }
+                this.initializing = true;
                 try {
-                    if (typeof Worker === 'undefined') return;
-                    const src = 'var Core=(' + CHESS_CORE.toString() + ')();' +
-                        'var ChessEngine=Core.ChessEngine;var AI=Core.AI;' +
-                        '(' + workerMain.toString() + ')();';
-                    const blob = new Blob([src], { type: 'application/javascript' });
-                    this.worker = new Worker(URL.createObjectURL(blob));
-                    this.worker.onmessage = (e) => {
-                        const cb = this.callbacks[e.data.id];
-                        if (cb) { delete this.callbacks[e.data.id]; cb(e.data); }
+                    this.worker = new Worker(STOCKFISH_ENGINE_PATH);
+                    this.worker.onmessage = (e) => this._handleLine(typeof e.data === 'string' ? e.data : String(e.data || ''));
+                    this.worker.onerror = (err) => {
+                        console.warn('[GrandChess] Stockfish worker error', err);
+                        this.failed = true;
+                        this.initializing = false;
+                        const wasCurrent = this.current;
+                        this.current = null;
+                        try { this.worker && this.worker.terminate(); } catch (_) { }
+                        this.worker = null;
+                        if (wasCurrent && !wasCurrent.cancelled) {
+                            const cb = wasCurrent.cb;
+                            wasCurrent.cancelled = true;
+                            try { cb(null); } catch (_) { }
+                        }
+                        if (!this.shownAssetWarning && typeof Toast !== 'undefined') {
+                            this.shownAssetWarning = true;
+                            setTimeout(() => Toast.show('Stockfish بارگذاری نشد؛ فایل‌های Engine و اجرای محلی را بررسی کنید.', 'error', 5000), 80);
+                        }
                     };
-                    this.worker.onerror = () => { this.worker = null; };
-                } catch (e) { this.worker = null; }
-            },
-            request(type, fen, difficulty, budgets, cb) {
-                const id = ++this.seq;
-                if (this.worker) {
-                    let settled = false;
-                    const done = (data) => { if (settled) return; settled = true; clearTimeout(timer); delete this.callbacks[id]; cb(data && data.ok ? data : null); };
-                    this.callbacks[id] = done;
-                    const timer = setTimeout(() => { if (!settled) { settled = true; delete this.callbacks[id]; this._fallback(type, fen, difficulty, budgets, cb); } }, 12000);
-                    try { this.worker.postMessage({ id, type, fen, difficulty, budgets }); }
-                    catch (e) { done(null); this._fallback(type, fen, difficulty, budgets, cb); }
-                } else {
-                    this._fallback(type, fen, difficulty, budgets, cb);
+                    this._send('uci');
+                } catch (e) {
+                    console.warn('[GrandChess] Cannot create Stockfish worker', e);
+                    this.failed = true;
+                    this.initializing = false;
+                    this.worker = null;
                 }
             },
+
+            _send(command) {
+                if (!this.worker) throw new Error('Stockfish worker unavailable');
+                this.worker.postMessage(command);
+            },
+
+            _configure(difficulty) {
+                // Single-threaded lite build: Threads is intentionally not set.
+                this._send('setoption name Hash value 128');
+                this._send('setoption name MultiPV value 1');
+                this._send('setoption name Move Overhead value 50');
+                if (difficulty === 'hard') {
+                    this._send('setoption name UCI_LimitStrength value false');
+                    this._send('setoption name UCI_Elo value 3190');
+                    this._send('setoption name Skill Level value 20');
+                } else if (difficulty === 'medium') {
+                    this._send('setoption name UCI_LimitStrength value true');
+                    this._send('setoption name UCI_Elo value 2000');
+                    this._send('setoption name Skill Level value 20');
+                } else {
+                    this._send('setoption name UCI_LimitStrength value true');
+                    this._send('setoption name UCI_Elo value 1500');
+                    this._send('setoption name Skill Level value 20');
+                }
+            },
+
+            _budget(difficulty, type, budgets) {
+                const B = budgets || {};
+                if (type === 'analyze') return difficulty === 'hard' ? (B.analyzeHard || 1800) : (B.analyze || 1000);
+                if (difficulty === 'hard') return B.hard || 6500;
+                if (difficulty === 'medium') return B.medium || 2200;
+                return B.easy || 1000;
+            },
+
+            _start(req) {
+                if (!this.ready || !this.worker) {
+                    this.queued = req;
+                    return;
+                }
+                this.current = req;
+                const budget = this._budget(req.difficulty, req.type, req.budgets);
+                req.timer = setTimeout(() => {
+                    if (this.current !== req || req.cancelled) return;
+                    console.warn('[GrandChess] Stockfish search timeout');
+                    req.cancelled = true;
+                    this.current = null;
+                    try { this._send('stop'); } catch (_) { }
+                    try { req.cb(null); } catch (_) { }
+                    this._resetWorker();
+                }, Math.max(12000, budget * 2 + 4000));
+                try {
+                    this._configure(req.difficulty);
+                    this._send('position fen ' + req.fen);
+                    this._send('go movetime ' + budget);
+                } catch (e) {
+                    console.warn('[GrandChess] Stockfish request failed', e);
+                    const cb = req.cb;
+                    if (req.timer) clearTimeout(req.timer);
+                    this.current = null;
+                    try { cb(null); } catch (_) { }
+                    this._drain();
+                }
+            },
+
+            _resetWorker() {
+                try { if (this.worker) this.worker.terminate(); } catch (_) { }
+                this.worker = null;
+                this.ready = false;
+                this.initializing = false;
+                this.failed = false;
+                this.init();
+                setTimeout(() => this._drain(), 150);
+            },
+
+            _cancelCurrent() {
+                if (!this.current || !this.worker) return false;
+                this.current.cancelled = true;
+                try { this._send('stop'); return true; } catch (_) { return false; }
+            },
+
+            _drain() {
+                if (this.current || !this.queued || !this.ready) return;
+                const next = this.queued;
+                this.queued = null;
+                this._start(next);
+            },
+
+            _finishSearch(line) {
+                const req = this.current;
+                this.current = null;
+                if (!req) return;
+                if (!req.cancelled) {
+                    const m = uciToMove(req.bestUci, req.fen);
+                    if (req.timer) clearTimeout(req.timer);
+                    try {
+                        req.cb(m ? {
+                            ok: true,
+                            move: {
+                                from: m.from,
+                                to: m.to,
+                                promotion: m.promotion || 0,
+                                flags: { ...(m.flags || {}) }
+                            },
+                            score: Number.isFinite(req.score) ? req.score : 0,
+                            depth: req.depth || 0,
+                            nodes: req.nodes || 0,
+                            engine: STOCKFISH_ENGINE_VERSION,
+                            pv: req.pv || []
+                        } : null);
+                    } catch (_) { }
+                }
+                this._drain();
+            },
+
+            _handleLine(raw) {
+                const lines = String(raw).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+                for (const line of lines) {
+                    if (line === 'uciok') {
+                        try {
+                            this._send('isready');
+                        } catch (_) { }
+                        continue;
+                    }
+                    if (line === 'readyok') {
+                        this.ready = true;
+                        this.initializing = false;
+                        this._drain();
+                        continue;
+                    }
+                    if (line.startsWith('info ') && this.current) {
+                        const info = parseStockfishInfo(line);
+                        if (info.score !== undefined) this.current.score = info.score;
+                        if (info.depth !== undefined) this.current.depth = info.depth;
+                        if (info.nodes !== undefined) this.current.nodes = info.nodes;
+                        if (info.pv) this.current.pv = info.pv;
+                        continue;
+                    }
+                    if (line.startsWith('bestmove ')) {
+                        const m = line.match(/^bestmove\s+(\S+)/i);
+                        if (this.current) {
+                            this.current.bestUci = m ? m[1] : null;
+                            this._finishSearch(line);
+                        }
+                    }
+                }
+            },
+
+            request(type, fen, difficulty, budgets, cb) {
+                const req = { id: ++this.seq, type, fen, difficulty, budgets: budgets || null, cb, score: 0, depth: 0, nodes: 0, pv: [], cancelled: false, bestUci: null };
+                if (this.failed) {
+                    this._fallback(type, fen, difficulty, budgets, cb);
+                    return;
+                }
+                this.init();
+
+                // A move search always pre-empts analysis. A newer analysis
+                // supersedes an older analysis; no two UCI searches overlap.
+                if (this.current) {
+                    if (type === 'move' || this.current.type === 'analyze') {
+                        this.queued = req;
+                        this._cancelCurrent();
+                    } else {
+                        this._fallback(type, fen, difficulty, budgets, cb);
+                    }
+                    return;
+                }
+                if (!this.ready) {
+                    this.queued = req;
+                    return;
+                }
+                this._start(req);
+            },
+
             _fallback(type, fen, difficulty, budgets, cb) {
                 setTimeout(() => {
                     try {
                         const eng = new ChessEngine();
                         eng.reset(fen);
-                        const small = { easy: 260, medium: 550, hard: 1200, analyze: 450, analyzeHard: 800 };
+                        const small = { easy: 700, medium: 1800, hard: 6000, analyze: 650, analyzeHard: 1200 };
                         const out = type === 'move'
                             ? AI.getMoveDetailed(eng, difficulty, small)
                             : AI.analyze(eng, difficulty, small);
                         let mv = null;
                         if (out && out.move) mv = { from: out.move.from, to: out.move.to, promotion: out.move.promotion || 0, flags: { ...(out.move.flags || {}) } };
-                        cb(out ? { ok: true, move: mv, score: out.score || 0 } : null);
+                        cb(out ? { ok: true, move: mv, score: out.score || 0, depth: out.depth || 0, nodes: out.nodes || 0, engine: 'JS fallback' } : null);
                     } catch (e) { cb(null); }
                 }, 40);
             }
@@ -5231,7 +5552,9 @@
             aiSeq: 0,
             analysisSeq: 0,
             gameStartTime: 0,
+            finalResult: null,
             startNewGame(mode, difficulty, timeControl, colorPref) {
+                this.finalResult = null;
                 this.aiSeq++; this.analysisSeq++;
                 this.mode = mode;
                 this.difficulty = difficulty;
@@ -5342,13 +5665,22 @@
                 Board.clearSelection();
                 Board.render();
                 Board.animateLastMove(applied);
-                if (this.status === 'playing' && !Clock.unlimited) Clock.switchSide(Board.engine.turn);
                 this.renderMoveList();
                 this.updateCaptured();
                 this.updatePlayerBars();
                 this.saveCurrentGame();
+
+                // A terminal position is a hard boundary: do not switch clocks,
+                // request analysis, or schedule another AI move after the game
+                // has already ended. This removes the intermittent result-modal
+                // race that could leave the board visually in the game screen.
+                if (status.status !== 'ongoing' && status.status !== 'check') {
+                    this.endGame(status);
+                    return;
+                }
+
+                if (this.status === 'playing' && !Clock.unlimited) Clock.switchSide(Board.engine.turn);
                 this.requestAnalysis();
-                if (status.status !== 'ongoing' && status.status !== 'check') { this.endGame(status); return; }
                 if (this.mode === 'ai' && !this.isMyTurn() && this.status === 'playing') this.triggerAIMove();
             },
             triggerAIMove() {
@@ -5363,6 +5695,18 @@
                     this.aiThinking = false;
                     this._setThinking(false);
                     if (this.status !== 'playing') return;
+
+                    // The board may have become terminal while the worker was
+                    // thinking (most importantly a clock timeout). Resolve that
+                    // state before accepting any stale worker response.
+                    try {
+                        const terminal = Board.engine.getGameStatus();
+                        if (terminal.status !== 'ongoing' && terminal.status !== 'check') {
+                            this.endGame(terminal);
+                            return;
+                        }
+                    } catch (_) { /* fall through to normal recovery */ }
+
                     if (!res || !res.move) {
                         let mv = null;
                         try {
@@ -5544,8 +5888,16 @@
                 this.endGame({ status: 'timeout', winner: loser === 'w' ? 'b' : 'w' });
             },
             endGame(result) {
-                if (this.status === 'ended') return;
+                // Idempotent terminal handling. Multiple async sources may detect
+                // the same ending (AI worker, clock, move pipeline); the first
+                // terminal result wins and subsequent calls cannot reopen or
+                // corrupt the game state.
+                if (this.status === 'ended') {
+                    if (!this.finalResult) this.finalResult = { ...(result || {}) };
+                    return;
+                }
                 this.status = 'ended';
+                this.finalResult = { ...(result || {}) };
                 this.aiSeq++; this.analysisSeq++;
                 this.aiThinking = false;
                 this._setThinking(false);
@@ -5592,7 +5944,14 @@
                 Storage.data.currentGame = null;
                 Storage.save();
                 Achievements.check(gameData, recordResult);
-                this.showResultModal({ title: resultTitle, titleClass: resultClass, subtitle, accuracy, moves: gameData.moves, duration: gameDuration, qualityCounts });
+                const resultInfo = { title: resultTitle, titleClass: resultClass, subtitle, accuracy, moves: gameData.moves, duration: gameDuration, qualityCounts };
+                // Defer one frame so every terminal path presents the final modal
+                // after the last board render has committed.
+                const show = () => {
+                    if (this.status === 'ended') this.showResultModal(resultInfo);
+                };
+                if (typeof requestAnimationFrame === 'function') requestAnimationFrame(show);
+                else setTimeout(show, 0);
             },
             showResultModal(info) {
                 Modal.show({
